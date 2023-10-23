@@ -137,6 +137,7 @@ func (mgr *Manager) JanitorLoop() {
 	if mgr.cfg != nil { // Might be nil for testing.
 		go func() {
 			ec := make(chan CfgEvent)
+			// mgr.cfg.Subscribe(PLAN_PINDEXES_KEY, ec)
 			mgr.cfg.Subscribe(PLAN_PINDEXES_DIRECTORY_STAMP, ec)
 			mgr.cfg.Subscribe(CfgNodeDefsKey(NODE_DEFS_WANTED), ec)
 			for {
@@ -160,7 +161,8 @@ func (mgr *Manager) JanitorLoop() {
 		case m := <-mgr.janitorCh:
 			atomic.AddUint64(&mgr.stats.TotJanitorOpStart, 1)
 
-			log.Printf("janitor: awakes, op: %v, msg: %s", m.op, m.msg)
+			log.Printf("Node[%v] | janitor: awakes, op: %v, msg: %s", mgr.uuid,
+				m.op, m.msg)
 
 			var err error
 
@@ -170,7 +172,8 @@ func (mgr *Manager) JanitorLoop() {
 				if err != nil {
 					// Keep looping as perhaps it's a transient issue.
 					// TODO: Perhaps need a rescheduled janitor kick.
-					log.Warnf("janitor: JanitorOnce, err: %v", err)
+					log.Warnf("Node[%v] | janitor: JanitorOnce, err: %v",
+						mgr.uuid, err)
 					atomic.AddUint64(&mgr.stats.TotJanitorKickErr, 1)
 				} else {
 					atomic.AddUint64(&mgr.stats.TotJanitorKickOk, 1)
@@ -531,8 +534,11 @@ func (mgr *Manager) hibernatePIndex(req []*pindexHibernateReq) []error {
 
 // JanitorOnce is the main body of a JanitorLoop.
 func (mgr *Manager) JanitorOnce(reason string) error {
+	logPrefix := fmt.Sprintf("Node[%s]: | ", mgr.uuid)
+
+
 	if mgr.cfg == nil { // Can occur during testing.
-		return fmt.Errorf("janitor: skipped due to nil cfg")
+		return fmt.Errorf("%sjanitor: skipped due to nil cfg", logPrefix)
 	}
 
 	feedAllotment := mgr.GetOptions()[FeedAllotmentOption]
@@ -543,11 +549,11 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 
 	planPIndexes, _, err := CfgGetPlanPIndexes(mgr.cfg)
 	if err != nil {
-		return fmt.Errorf("janitor: skipped on CfgGetPlanPIndexes err: %v", err)
+		return fmt.Errorf("%sjanitor: skipped on CfgGetPlanPIndexes err: %v",logPrefix,  err)
 	}
 	if planPIndexes == nil {
 		// Might happen if janitor wins an initialization race.
-		return fmt.Errorf("janitor: skipped on nil planPIndexes")
+		return fmt.Errorf("%sjanitor: skipped on nil planPIndexes", logPrefix)
 	}
 
 	_, currPIndexes := mgr.CurrentMaps()
@@ -560,18 +566,18 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 	// pindexes to add, remove and restart
 	planPIndexesToAdd, pindexesToRemove, pindexesToRestart, pindexesToHibernate :=
 		classifyAddRemoveRestartPIndexes(mgr, addPlanPIndexes, removePIndexes)
-	log.Printf("janitor: pindexes to remove: %d", len(pindexesToRemove))
+	log.Printf("%sjanitor: pindexes to remove: %d", logPrefix, len(pindexesToRemove))
 	for _, pi := range pindexesToRemove {
-		log.Printf("  pindex: %v; UUID: %v", pi.Name, pi.IndexUUID)
+		log.Printf("  %spindex: %v; UUID: %v", logPrefix, pi.Name, pi.IndexUUID)
 	}
-	log.Printf("janitor: pindexes to add: %d", len(planPIndexesToAdd))
+	log.Printf("%sjanitor: pindexes to add: %d", logPrefix, len(planPIndexesToAdd))
 	for _, ppi := range planPIndexesToAdd {
-		log.Printf("  pindex: %v; UUID: %v", ppi.Name, ppi.IndexUUID)
+		log.Printf("  %spindex: %v; UUID: %v", logPrefix, ppi.Name, ppi.IndexUUID)
 	}
-	log.Printf("janitor: pindexes to restart: %d", len(pindexesToRestart))
+	log.Printf("%sjanitor: pindexes to restart: %d", logPrefix, len(pindexesToRestart))
 	for _, pi := range pindexesToRestart {
 		if pi.pindex != nil {
-			log.Printf("  pindex: %v; UUID: %v", pi.pindex.Name, pi.pindex.IndexUUID)
+			log.Printf("  %spindex: %v; UUID: %v", logPrefix, pi.pindex.Name, pi.pindex.IndexUUID)
 		}
 	}
 	// restart any of the pindexes so that they can
@@ -583,10 +589,10 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 		planPIndexesToAdd = append(planPIndexesToAdd, elicitAddPlanPIndexes(addPlanPIndexes, restartErrs)...)
 	}
 	var errs []error
-	log.Printf("janitor: pindexes to hibernate: %d", len(pindexesToHibernate))
+	log.Printf("%sjanitor: pindexes to hibernate: %d", logPrefix, len(pindexesToHibernate))
 	for _, pi := range pindexesToHibernate {
 		if pi != nil {
-			log.Printf(" pindex %v; UUID: %v", pi.pindex.Name, pi.pindex.UUID)
+			log.Printf(" %spindex %v; UUID: %v", logPrefix, pi.pindex.Name, pi.pindex.UUID)
 		}
 	}
 
@@ -608,12 +614,12 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 		mgr.findHibernationBucketsToMonitor()
 
 	if hibernationTask == UNHIBERNATE_TASK {
-		log.Printf("janitor: bucket to track for unhibernation: %s", hibernationBucket)
+		log.Printf("%sjanitor: bucket to track for unhibernation: %s", logPrefix, hibernationBucket)
 		mgr.trackResumeBucketState(hibernationBucket, hibernationSourceType)
 	}
 
 	if hibernationTask == HIBERNATE_TASK {
-		log.Printf("janitor: bucket to track for hibernation: %s", hibernationBucket)
+		log.Printf("%sjanitor: bucket to track for hibernation: %s", logPrefix, hibernationBucket)
 		mgr.trackPauseBucketState(hibernationBucket, hibernationSourceType)
 	}
 
@@ -624,14 +630,14 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 	// filter out non-ready feeds.
 	addFeeds = filterFeedable(mgr, addFeeds)
 
-	log.Printf("janitor: feeds to remove: %d", len(removeFeeds))
+	log.Printf("%sjanitor: feeds to remove: %d", logPrefix, len(removeFeeds))
 	for _, removeFeed := range removeFeeds {
-		log.Printf("  %s", removeFeed.Name())
+		log.Printf("  %s%s", logPrefix, removeFeed.Name())
 	}
-	log.Printf("janitor: feeds to add: %d", len(addFeeds))
+	log.Printf("%sjanitor: feeds to add: %d", logPrefix, len(addFeeds))
 	for _, targetPIndexes := range addFeeds {
 		if len(targetPIndexes) > 0 {
-			log.Printf("  %s", FeedNameForPIndex(targetPIndexes[0], feedAllotment))
+			log.Printf("  %s%s", logPrefix, FeedNameForPIndex(targetPIndexes[0], feedAllotment))
 		}
 	}
 
@@ -640,7 +646,7 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 		err = mgr.stopFeed(removeFeed)
 		if err != nil {
 			errs = append(errs,
-				fmt.Errorf("janitor: stopping feed, name: %s, err: %v",
+				fmt.Errorf("%sjanitor: stopping feed, name: %s, err: %v", logPrefix,
 					removeFeed.Name(), err))
 		}
 	}
@@ -649,7 +655,7 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 		err = mgr.startFeed(addFeedTargetPIndexes)
 		if err != nil {
 			errs = append(errs,
-				fmt.Errorf("janitor: adding feed, err: %v", err))
+				fmt.Errorf("%sjanitor: adding feed, err: %v", logPrefix, err))
 		}
 	}
 
@@ -658,7 +664,7 @@ func (mgr *Manager) JanitorOnce(reason string) error {
 		for i, err := range errs {
 			s = append(s, fmt.Sprintf("#%d: %v", i, err))
 		}
-		return fmt.Errorf("janitor: JanitorOnce errors: %d, %#v",
+		return fmt.Errorf("%sjanitor: JanitorOnce errors: %d, %#v", logPrefix,
 			len(errs), s)
 	}
 

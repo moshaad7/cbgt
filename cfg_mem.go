@@ -9,7 +9,6 @@
 package cbgt
 
 import (
-	"fmt"
 	"math"
 	"sync"
 )
@@ -98,7 +97,8 @@ func (c *CfgMem) Set(key string, val []byte, cas uint64) (
 	switch {
 	case cas == 0:
 		if exists {
-			return 0, fmt.Errorf("cfg_mem: entry already exists, key: %s", key)
+			// return 0, fmt.Errorf("cfg_mem: entry already exists, key: %s", key)
+			return 0, &CfgCASError{}
 		}
 	case cas == CFG_CAS_FORCE:
 		break

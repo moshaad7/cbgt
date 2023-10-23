@@ -12,12 +12,13 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"log"
 	"sort"
 	"strings"
 	"sync/atomic"
 
 	"github.com/couchbase/blance"
-	log "github.com/couchbase/clog"
+	"github.com/couchbase/clog"
 )
 
 func init() {
@@ -104,6 +105,7 @@ func (mgr *Manager) PlannerNOOP(msg string) {
 
 // PlannerKick synchronously kicks the manager's planner, if any.
 func (mgr *Manager) PlannerKick(msg string) {
+	clog.Printf("Node[%v] | PlannerKick: msg:%v", mgr.uuid, msg)
 	atomic.AddUint64(&mgr.stats.TotPlannerKick, 1)
 
 	if mgr.tagsMap == nil || mgr.tagsMap["planner"] {
@@ -133,6 +135,8 @@ func (mgr *Manager) PlannerLoop() {
 					return
 				case e := <-ec:
 					atomic.AddUint64(&mgr.stats.TotPlannerSubscriptionEvent, 1)
+					log.Printf("Node[%v] | planner: got cfg event, key: %s",
+						mgr.uuid, e.Key)
 					mgr.PlannerKick("cfg changed, key: " + e.Key)
 				}
 			}
@@ -148,7 +152,8 @@ func (mgr *Manager) PlannerLoop() {
 		case m := <-mgr.plannerCh:
 			atomic.AddUint64(&mgr.stats.TotPlannerOpStart, 1)
 
-			log.Printf("planner: awakes, op: %v, msg: %s", m.op, m.msg)
+			log.Printf("Node[%v] | planner: awakes, op: %v, msg: %s", mgr.uuid,
+				m.op, m.msg)
 
 			var err error
 
@@ -156,7 +161,8 @@ func (mgr *Manager) PlannerLoop() {
 				atomic.AddUint64(&mgr.stats.TotPlannerKickStart, 1)
 				changed, err2 := mgr.PlannerOnce(m.msg)
 				if err2 != nil {
-					log.Warnf("planner: PlannerOnce, err: %v", err2)
+					clog.Warnf("Node[%v] | planner: PlannerOnce, err: %v",
+						mgr.uuid, err2)
 					atomic.AddUint64(&mgr.stats.TotPlannerKickErr, 1)
 					// Keep looping as perhaps it's a transient issue.
 				} else {
@@ -209,6 +215,7 @@ type PlannerFilter func(indexDef *IndexDef,
 // Plan runs the planner once.
 func Plan(cfg Cfg, version, uuid, server string, options map[string]string,
 	plannerFilter PlannerFilter) (bool, error) {
+	clog.Printf("Node[%v] | Plan called", uuid)
 	indexDefs, nodeDefs, planPIndexesPrev, cas, err :=
 		PlannerGetPlan(cfg, version, uuid)
 	if err != nil {
@@ -238,6 +245,7 @@ func Plan(cfg Cfg, version, uuid, server string, options map[string]string,
 	}
 
 	if SamePlanPIndexes(planPIndexes, planPIndexesPrev) {
+		clog.Printf("Node[%s] | Plan: SamePlanPIndexes, skipping save", uuid)
 		return false, nil
 	}
 
@@ -247,6 +255,16 @@ func Plan(cfg Cfg, version, uuid, server string, options map[string]string,
 			" perhaps a concurrent planner won, cas: %d, err: %v",
 			cas, err)
 	}
+
+	nodesToNumPindexes := make(map[string]int, len(nodeDefs.NodeDefs))
+	for _, pindex := range planPIndexes.PlanPIndexes {
+		for node, _ := range pindex.Nodes {
+			nodesToNumPindexes[node]++
+		}
+	}
+
+	clog.Printf("Node[%s] | Plan: save new plan, cas %d, #Pindexes:%v, residents:%+v",
+		uuid, cas, len(planPIndexes.PlanPIndexes), nodesToNumPindexes)
 
 	return true, nil
 }
@@ -536,11 +554,12 @@ func CalcPlan(mode string, indexDefs *IndexDefs, nodeDefs *NodeDefs,
 		planPIndexesForIndex, err2 := SplitIndexDefIntoPlanPIndexes(
 			indexDef, server, options, planPIndexes)
 		if err2 != nil {
-			log.Warnf("planner: could not SplitIndexDefIntoPlanPIndexes,"+
+			clog.Warnf("planner: could not SplitIndexDefIntoPlanPIndexes,"+
 				" indexDef.Name: %s, server: %s, err: %v",
 				indexDef.Name, server, err2)
 			continue // Keep planning the other IndexDefs.
 		}
+		// clog.Printf("len(planPlanPIndexesForIndex):%v", len(planPIndexesForIndex))
 
 		pho, skip, err = plannerHookCall("indexDef.split",
 			indexDef, planPIndexesForIndex)
@@ -687,6 +706,13 @@ func SplitIndexDefIntoPlanPIndexes(indexDef *IndexDef, server string,
 	} else {
 		for _, sourcePartition := range strings.Split(options["resumeSourcePartitions"], ",") {
 			sourcePartitionsArr = append(sourcePartitionsArr, sourcePartition)
+		}
+	}
+
+	if len(sourcePartitionsArr) == 0 {
+		sourcePartitionsArr = sourcePartitionsArr[:0]
+		for i := 0; i < 1024; i++ {
+			sourcePartitionsArr = append(sourcePartitionsArr, fmt.Sprintf("%d", i))
 		}
 	}
 
